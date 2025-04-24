@@ -1,37 +1,43 @@
-# Основные компоненты с фиксированными версиями
+# requirements.txt
+
+# Базовые компоненты для FastAPI
 fastapi==0.104.1
 uvicorn==0.23.2
 pydantic==2.4.2
 python-dotenv==1.0.0
 python-multipart==0.0.6
 
-# LangChain и связанные библиотеки с совместимыми версиями
-# Обновляем langchain до совместимой с langchain-community версии
-langchain==0.3.0  # Обновлено с 0.1.0 для совместимости с langchain-community
-langchain-openai==0.1.0
-langchain-community==0.3.0  # Совместимая версия с langchain 0.3.0
-langchain-text-splitters==0.0.1
-faiss-cpu==1.7.4
+# OpenAI
 openai==1.10.0
+tiktoken==0.5.2
 
-# Обработка документов с фиксированными версиями
+# Обработка документов
 pypdf==3.17.1
 docx2txt==0.8
-unstructured==0.10.30
 markdown==3.5
+PyPDF2==3.0.1
 
-# HTTP клиент и повторные попытки
+# HTTP и повторные попытки
 httpx==0.25.1
 tenacity==8.2.3
-
-# Другие зависимости
-PyPDF2==3.0.1
-tiktoken==0.5.2
 
 # Базовые научные библиотеки
 numpy==1.26.1
 pandas==2.1.3
 
+# Установка LangChain - без фиксации точных версий для разрешения конфликтов
+# Используем только constraint для минимальной версии
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-openai>=0.1.0
+langchain-text-splitters>=0.3.0
+langchain-core>=0.3.0
+faiss-cpu==1.7.4
+
 # Дополнительные зависимости для unstructured
 nltk==3.8.1
 python-magic==0.4.27
+
+# Опционально - убрано из списка основных зависимостей для уменьшения конфликтов
+# unstructured может вызывать много конфликтов зависимостей
+unstructured==0.10.30
