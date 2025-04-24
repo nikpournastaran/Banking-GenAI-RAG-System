@@ -1,27 +1,29 @@
-fastapi==0.104.1
-uvicorn==0.23.2
-pydantic==2.7.4
-python-dotenv==1.0.0
-python-multipart==0.0.6
+fastapi==0.110.0
+uvicorn==0.29.0
+pydantic>=2.7.0,<3.0.0
+python-dotenv==1.0.1
+python-multipart==0.0.9
 
-langchain==0.1.14
+# Set fixed compatible versions for LangChain ecosystem
+langchain==0.1.16
 langchain-openai==0.0.8
-langchain-community==0.0.30
-langchain-text-splitters==0.3.0
-# langchain-core удалён — подтянется автоматически нужной версией
+langchain-community==0.0.36
+langchain-text-splitters==0.3.5
 
+# Vector database
 faiss-cpu==1.7.4
-openai==1.10.0
 
-pypdf==3.17.1
+# OpenAI
+openai==1.12.0
+
+# Document processing - minimal dependencies
+pypdf==4.0.1
 docx2txt==0.8
-markdown==3.5
+markdown==3.5.2
 
-httpx==0.25.1
+# Utilities
+httpx==0.27.0
 tenacity==8.2.3
 
-numpy==1.26.1
-pandas==2.1.3
-nltk==3.8.1
-python-magic==0.4.27
-unstructured==0.10.30
+# Core dependencies only - remove extras
+numpy==1.26.4

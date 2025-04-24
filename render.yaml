@@ -2,18 +2,27 @@ services:
   - type: web
     name: rag-chatbot
     env: docker
-    plan: starter # Выберите подходящий план
+    plan: starter
     dockerfilePath: ./Dockerfile
     envVars:
       - key: OPENAI_API_KEY
-        sync: false # API ключ должен быть добавлен через интерфейс Render
+        sync: false
       - key: ADMIN_PASSWORD
-        sync: false # Пароль также должен быть настроен через Render
+        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: RENDER
+        value: "true"
     healthCheckPath: /ping
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
     buildFilter:
       paths:
-        - main.py
-        - static/**
-        - requirements.txt
-        - Dockerfile
-        - start.sh
+        - "main.py"
+        - "static/**"
+        - "requirements.txt"
+        - "Dockerfile"
+        - "start.sh"
+        - "index/**"

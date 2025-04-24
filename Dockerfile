@@ -1,40 +1,33 @@
 FROM python:3.11-slim
 
-# Установка рабочей директории
 WORKDIR /app
 
-# Копируем файл зависимостей
-COPY requirements.txt .
-
-# Обновляем pip и создаём виртуальное окружение
-RUN python -m venv /opt/venv \
- && . /opt/venv/bin/activate \
- && pip install --upgrade pip
-
-# Установка системных зависимостей для unstructured и других библиотек
+# Install system dependencies first
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    wget \
-    git \
     libmagic1 \
     poppler-utils \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Python-зависимости
-RUN . /opt/venv/bin/activate \
- && pip install --no-cache-dir -r requirements.txt
+# Copy requirements file
+COPY requirements.txt .
 
-# Копируем остальные файлы проекта
+# Install Python dependencies in a single layer
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Create data directory for persistent storage
+RUN mkdir -p /data && chmod 777 /data
+
+# Copy application code
 COPY . .
 
-# Делаем стартовый скрипт исполняемым
+# Make start script executable
 RUN chmod +x start.sh
 
-# Указываем порт для FastAPI
+# Expose port
 EXPOSE 8000
 
-# Устанавливаем переменные окружения для виртуального окружения
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Запускаем приложение
+# Run the application
 CMD ["./start.sh"]
