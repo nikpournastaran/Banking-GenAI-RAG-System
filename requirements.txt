@@ -1,0 +1,32 @@
+# Основные компоненты
+fastapi==0.104.1
+uvicorn==0.23.2
+pydantic==2.4.2
+python-dotenv==1.0.0
+python-multipart==0.0.6
+
+# LangChain и связанные библиотеки
+langchain==0.0.335
+langchain-openai==0.0.5
+langchain-community==0.0.12
+langchain_text_splitters==0.3.7  # Добавлен пакет текстовых сплиттеров
+faiss-cpu==1.7.4
+openai>=1.10.0
+
+# Обработка документов
+pypdf==3.17.1
+docx2txt==0.8
+unstructured==0.10.30
+markdown==3.5
+
+# HTTP клиент и повторные попытки (важно для стабильности)
+httpx==0.25.1
+tenacity==8.2.3
+
+# Другие зависимости
+PyPDF2==3.0.1
+tiktoken>=0.5.2,<0.6.0
+
+# Ожидаемые зависимости
+numpy==1.26.1
+pandas==2.1.3
