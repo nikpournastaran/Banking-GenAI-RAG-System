@@ -5,11 +5,11 @@ pydantic==2.4.2
 python-dotenv==1.0.0
 python-multipart==0.0.6
 
-# LangChain и связанные библиотеки с фиксированными версиями
-# Используем последние стабильные версии, совместимые друг с другом
-langchain==0.1.0
+# LangChain и связанные библиотеки с совместимыми версиями
+# Обновляем langchain до совместимой с langchain-community версии
+langchain==0.3.0  # Обновлено с 0.1.0 для совместимости с langchain-community
 langchain-openai==0.1.0
-langchain-community==0.3.22  # Обновлено до доступной версии
+langchain-community==0.3.0  # Совместимая версия с langchain 0.3.0
 langchain-text-splitters==0.0.1
 faiss-cpu==1.7.4
 openai==1.10.0
