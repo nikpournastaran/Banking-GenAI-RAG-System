@@ -486,7 +486,8 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
         # Получаем релевантные документы с обработкой исключений
         try:
             print(f"Выполняется поиск по запросу: '{enhanced_query[:50]}...'")
-            retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
+            retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 10, "fetch_k": 20})
+            # retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
             relevant_docs = retriever.get_relevant_documents(enhanced_query)
             print(f"Найдено {len(relevant_docs)} релевантных документов")
 
