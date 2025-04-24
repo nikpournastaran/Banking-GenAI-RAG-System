@@ -4,12 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="08b4c360-404a-415b-b1f8-6d1a0f42abdd" name="Changes" comment="requirments апдейт, перестройка индекса">
-      <change beforePath="$PROJECT_DIR$/index/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/index/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/index/index.faiss" beforeDir="false" afterPath="$PROJECT_DIR$/index/index.faiss" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/index/index.pkl" beforeDir="false" afterPath="$PROJECT_DIR$/index/index.pkl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/index/index_metadata.json" beforeDir="false" afterPath="$PROJECT_DIR$/index/index_metadata.json" afterDir="false" />
-    </list>
+    <list default="true" id="08b4c360-404a-415b-b1f8-6d1a0f42abdd" name="Changes" comment="requirments апдейт, перестройка индекса дубль 10" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -185,13 +180,22 @@
       <option name="project" value="LOCAL" />
       <updated>1745478068822</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="requirments апдейт, перестройка индекса дубль 10">
+      <option name="closed" value="true" />
+      <created>1745478686886</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1745478686886</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <option name="ADD_EXTERNAL_FILES_SILENTLY" value="true" />
     <MESSAGE value="updated interface (administrator button), pdf loading added, interface impovements" />
     <MESSAGE value="requirments апдейт, перестройка индекса" />
-    <option name="LAST_COMMIT_MESSAGE" value="requirments апдейт, перестройка индекса" />
+    <MESSAGE value="requirments апдейт, перестройка индекса дубль 10" />
+    <option name="LAST_COMMIT_MESSAGE" value="requirments апдейт, перестройка индекса дубль 10" />
   </component>
 </project>
