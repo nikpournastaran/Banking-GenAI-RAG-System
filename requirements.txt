@@ -6,13 +6,14 @@ python-dotenv==1.0.0
 python-multipart==0.0.6
 
 # LangChain и связанные библиотеки
-langchain==0.3.0
-langchain-openai==0.1.0
-langchain-community==0.3.0
-langchain-text-splitters==0.3.0
-langchain-core==0.3.0
+langchain==0.1.14
+langchain-openai==0.0.8
+langchain-community==0.0.22
+langchain-text-splitters==0.0.3
+langchain-core==0.1.35
 faiss-cpu==1.7.4
 openai==1.10.0
+
 
 # Обработка документов
 pypdf==3.17.1
