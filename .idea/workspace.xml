@@ -107,8 +107,8 @@
       <method v="2" />
     </configuration>
     <list>
-      <item itemvalue="Python.Run RAG Bot" />
       <item itemvalue="Python.main" />
+      <item itemvalue="Python.Run RAG Bot" />
     </list>
     <recent_temporary>
       <list>
