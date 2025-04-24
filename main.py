@@ -176,7 +176,7 @@ def load_vectorstore():
 
     try:
         print("Попытка загрузки индекса из:", INDEX_PATH)
-        vectorstore = FAISS.load_local(INDEX_PATH, OpenAIEmbeddings())
+        vectorstore = FAISS.load_local(INDEX_PATH, OpenAIEmbeddings(), allow_dangerous_deserialization=True)
         print("Векторное хранилище успешно загружено")
         return vectorstore
     except Exception as e:
