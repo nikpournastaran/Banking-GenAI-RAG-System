@@ -2,6 +2,7 @@
 venv/
 env/
 .env
+.idea/
 
 # Кэши и временные файлы
 __pycache__/
