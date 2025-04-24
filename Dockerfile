@@ -1,17 +1,17 @@
-# Используем минимальный образ Python
 FROM python:3.11-slim
 
-# Устанавливаем рабочую директорию
+# Установка рабочей директории
 WORKDIR /app
 
-# Копируем requirements.txt
+# Копируем файл зависимостей
 COPY requirements.txt .
 
-# Создаем виртуальное окружение и активируем
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+# Обновляем pip и создаём виртуальное окружение
+RUN python -m venv /opt/venv \
+ && . /opt/venv/bin/activate \
+ && pip install --upgrade pip
 
-# Устанавливаем системные зависимости (до pip install, чтобы кэш не сбрасывался)
+# Установка системных зависимостей для unstructured и других библиотек
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     wget \
@@ -20,25 +20,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Обновляем pip
-RUN pip install --upgrade pip
-
-# Устанавливаем все зависимости одним шагом — это лучше для кэша Docker
-RUN pip install --no-cache-dir -r requirements.txt
+# Устанавливаем Python-зависимости
+RUN . /opt/venv/bin/activate \
+ && pip install --no-cache-dir -r requirements.txt
 
 # Копируем остальные файлы проекта
-COPY main.py .
-COPY static /app/static
-COPY index/parts /app/index/parts
-COPY start.sh .
+COPY . .
 
-# Создаем необходимые директории и файлы
-RUN mkdir -p docs index && \
-    touch last_updated.txt rebuild_log.txt && \
-    chmod +x start.sh
+# Делаем стартовый скрипт исполняемым
+RUN chmod +x start.sh
 
-# Открываем порт приложения
+# Указываем порт для FastAPI
 EXPOSE 8000
 
-# Команда запуска
+# Устанавливаем переменные окружения для виртуального окружения
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Запускаем приложение
 CMD ["./start.sh"]
