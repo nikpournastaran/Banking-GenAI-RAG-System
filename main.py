@@ -726,10 +726,7 @@ async def test_search(q: str = Form(...)):
         vectorstore = load_vectorstore()
 
         # Используем MMR для поиска, как в основном эндпоинте
-        retriever = vectorstore.as_retriever(
-            search_type="mmr",
-            search_kwargs={"k": 4, "fetch_k": 10}
-        )
+        retriever = veretriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
 
         # Получаем документы
         docs = retriever.get_relevant_documents(q)
