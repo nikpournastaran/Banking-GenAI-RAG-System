@@ -487,7 +487,21 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
         try:
             print(f"Выполняется поиск по запросу: '{enhanced_query[:50]}...'")
             # Использование "similarity" поиска с k=6 как в старом коде
-            retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
+
+            retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 6, "fetch_k": 20})
+
+            # retriever = vectorstore.as_retriever(
+            #     search_type="similarity_score_threshold",  # Используем поиск с порогом
+            #     search_kwargs={
+            #         "k": 8,  # Возвращаем больше документов
+            #         "score_threshold": 0.5  # Отбрасываем документы с низкой релевантностью
+            #     }
+            # )
+
+            # retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
+
+
+
             relevant_docs = retriever.get_relevant_documents(enhanced_query)
             print(f"Найдено {len(relevant_docs)} релевантных документов")
 
@@ -682,18 +696,11 @@ async def test_search(q: str = Form(...)):
 
         # Используем для тестирования разные методы поиска, чтобы сравнить
         # По умолчанию используем MMR для разнообразия результатов
-        # retriever_mmr = vectorstore.as_retriever(
-        #     search_type="mmr",
-        #     search_kwargs={"k": 4, "fetch_k": 10}
-        # )
-        # В функции ask() в main.py, замените строки поиска
-        retriever = vectorstore.as_retriever(
-            search_type="similarity_score_threshold",  # Используем поиск с порогом
-            search_kwargs={
-                "k": 8,  # Возвращаем больше документов
-                "score_threshold": 0.5  # Отбрасываем документы с низкой релевантностью
-            }
+        retriever_mmr = vectorstore.as_retriever(
+            search_type="mmr",
+            search_kwargs={"k": 4, "fetch_k": 10}
         )
+
 
 
         # Дополнительно используем similarity для проверки
