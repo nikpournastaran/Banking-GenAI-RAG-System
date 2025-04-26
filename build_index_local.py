@@ -20,6 +20,7 @@ import tempfile
 import argparse
 from datetime import datetime
 from pathlib import Path
+import uuid
 
 # Проверка наличия необходимых библиотек
 try:
@@ -90,7 +91,7 @@ def extract_title(text, filename):
 
 
 def build_index(docs_dir, max_docs=0):
-    """Строит FAISS индекс из всех документов в указанной директории"""
+    """Строит FAISS индекс из всех документов в указанной директории с улучшениями"""
     print(f"Начинаем индексацию документов из {docs_dir}...")
 
     # Проверяем наличие директории с документами
@@ -165,10 +166,41 @@ def build_index(docs_dir, max_docs=0):
             pages = loader.load()
             print(f"  Загружено страниц: {len(pages)}")
 
-            # Добавляем метаданные
+            # Расширенная обработка метаданных для улучшения поиска
             for page in pages:
+                # Получаем базовый заголовок
                 source_title = extract_title(page.page_content, file.name)
+
+                # Добавляем расширенные метаданные
                 page.metadata["source"] = source_title
+
+                # Добавляем ключевые слова для улучшения поиска
+                first_lines = page.page_content.splitlines()[:20]
+                first_text = " ".join(first_lines)
+
+                # Поиск важных терминов для индексации
+                keywords = []
+                important_terms = [
+                    "риск", "аппетит", "капитал", "ВПОДК", "норматив", "банк",
+                    "финансов", "отчетность", "требования", "положение",
+                    "правила", "МСФО", "IFRS", "IAS"
+                ]
+
+                for term in important_terms:
+                    if term.lower() in first_text.lower() or term.lower() in file.name.lower():
+                        keywords.append(term)
+
+                # Добавляем ключевые слова в метаданные, если они найдены
+                if keywords:
+                    page.metadata["keywords"] = ", ".join(keywords)
+
+                # Определяем тип документа для лучшей категоризации
+                if any(standard in file.name.upper() for standard in ["МСФО", "IAS", "IFRS"]):
+                    page.metadata["document_type"] = "стандарт"
+                elif any(law in file.name.lower() for law in ["закон", "зн", "правил", "кодекс"]):
+                    page.metadata["document_type"] = "нормативный акт"
+
+                # Добавляем в общий список
                 all_docs.append(page)
 
             print(f"  Документ успешно обработан")
@@ -190,20 +222,93 @@ def build_index(docs_dir, max_docs=0):
         print("Нет документов для индексации")
         return None
 
-    # Разбиваем документы на чанки
+    # Разбиваем документы на чанки с улучшенными параметрами
     print("\nРазбиваем документы на чанки...")
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
-        separators=["\n\n", "\n", " ", ""]
+        chunk_size=4000,  # Увеличенный размер чанка для лучшего сохранения контекста
+        chunk_overlap=500,  # Больше перекрытие для связности
+        separators=["\n\n", "\n", ".", " ", ""]  # Добавлен разделитель по предложениям
     )
 
     texts = splitter.split_documents(all_docs)
     print(f"Создано {len(texts)} чанков")
 
-    # Создаем FAISS индекс
-    print("Создаем FAISS индекс...")
-    db = FAISS.from_documents(texts, embeddings)
+    # Сохраняем идентификаторы в chunk_store для возможности получения оригинального текста
+    for text in texts:
+        # Создаем уникальный ID для каждого чанка
+        chunk_id = str(uuid.uuid4())
+        text.metadata["id"] = chunk_id
+        chunk_store[chunk_id] = text.page_content
+
+    # Создаем FAISS индекс с обработкой по батчам
+    print("Создаем FAISS индекс (обработка батчами)...")
+
+    # Размер батча для API вызовов OpenAI
+    batch_size = 50  # Регулируйте в зависимости от размера чанков
+
+    # Обработка первого батча для инициализации индекса
+    print(f"Инициализация индекса первым батчем (1-{min(batch_size, len(texts))})...")
+    first_batch = texts[:min(batch_size, len(texts))]
+
+    try:
+        db = FAISS.from_documents(first_batch, embeddings)
+        print(f"Первый батч успешно обработан")
+    except Exception as e:
+        print(f"Ошибка при обработке первого батча: {e}")
+        print("Попробуем с меньшим размером батча...")
+
+        # Уменьшаем размер если произошла ошибка
+        smaller_batch_size = 20
+        first_batch = texts[:min(smaller_batch_size, len(texts))]
+        db = FAISS.from_documents(first_batch, embeddings)
+        batch_size = smaller_batch_size  # Используем уменьшенный размер и для остальных
+
+    # Обработка остальных батчей
+    total_batches = (len(texts) - 1) // batch_size + 1
+
+    for i in range(batch_size, len(texts), batch_size):
+        end_idx = min(i + batch_size, len(texts))
+        current_batch = texts[i:end_idx]
+        batch_number = i // batch_size + 1
+
+        print(f"Обработка батча {batch_number}/{total_batches}, чанки {i}-{end_idx - 1}...")
+
+        try:
+            # Создаем временный индекс для текущего батча
+            batch_db = FAISS.from_documents(current_batch, embeddings)
+
+            # Объединяем с основным индексом
+            db.merge_from(batch_db)
+
+            print(f"Батч {batch_number} успешно обработан и добавлен в индекс")
+
+            # Пауза для соблюдения лимитов API
+            if end_idx < len(texts):
+                pause_time = 10
+                print(f"Пауза {pause_time} секунд для соблюдения лимитов API...")
+                time.sleep(pause_time)
+
+        except Exception as e:
+            print(f"Ошибка при обработке батча {batch_number}: {str(e)}")
+
+            if "rate_limit" in str(e).lower():
+                # Если ошибка связана с лимитами API, ждем дольше
+                wait_time = 60
+                print(f"Ошибка лимита API. Ожидание {wait_time} секунд перед повторной попыткой...")
+                time.sleep(wait_time)
+
+                try:
+                    # Повторная попытка с тем же батчем
+                    print(f"Повторная попытка для батча {batch_number}...")
+                    batch_db = FAISS.from_documents(current_batch, embeddings)
+                    db.merge_from(batch_db)
+                    print(f"Батч {batch_number} успешно обработан со второй попытки")
+                except Exception as e2:
+                    print(f"Не удалось обработать батч {batch_number} и со второй попытки: {str(e2)}")
+                    print("Пропускаем этот батч")
+            else:
+                # Другая ошибка - просто пропускаем батч
+                print(f"Пропускаем батч {batch_number} из-за ошибки")
 
     print("FAISS индекс успешно создан!")
 
@@ -214,7 +319,6 @@ def build_index(docs_dir, max_docs=0):
         "chunk_count": len(texts),
         "error_files": error_files
     }
-
 
 def save_index_to_directory(index_data, output_dir):
     """Сохраняет индекс и связанные данные в указанную директорию"""
