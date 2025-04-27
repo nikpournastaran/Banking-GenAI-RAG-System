@@ -518,10 +518,16 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
         # Получаем релевантные документы с обработкой исключений
         try:
             print(f"Выполняется поиск по запросу: '{enhanced_query[:50]}...'")
-            # Используем "similarity" поиск как в локальном боте с k=6
+
+            # Используем MMR с оптимизированными параметрами для лучшего баланса
+            # между релевантностью и разнообразием
             retriever = vectorstore.as_retriever(
-                search_type="similarity",
-                search_kwargs={"k": 6}
+                search_type="mmr",
+                search_kwargs={
+                    "k": 6,  # Общее количество результатов
+                    "fetch_k": 12,  # Уменьшено с 20 до 12 для большей точности
+                    "lambda_mult": 0.7  # Увеличено с 0.5 до 0.7 для большего акцента на релевантности
+                }
             )
 
             relevant_docs = retriever.get_relevant_documents(enhanced_query)
