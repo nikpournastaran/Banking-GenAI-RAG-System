@@ -7,7 +7,7 @@
 
 По умолчанию скрипт:
 1. Использует документы из директории ./docs внутри проекта
-2. Обрабатывает все документы и создает FAISS индекс
+2. Обрабатывает все документы и создает FAISS индекс с оптимизированными параметрами
 3. Сохраняет готовый индекс в локальную директорию ./index внутри проекта
 """
 
@@ -18,34 +18,85 @@ import json
 import shutil
 import tempfile
 import argparse
+import traceback
 from datetime import datetime
 from pathlib import Path
 import uuid
 
-# Проверка наличия необходимых библиотек
+print("Запуск скрипта build_index_local.py...")
+print(f"Текущая директория: {os.getcwd()}")
+
+# Проверка наличия необходимых библиотек с детальным выводом
+required_packages = [
+    "dotenv", "pypdf", "langchain_text_splitters", "langchain_community",
+    "langchain_openai", "openai", "faiss-cpu"
+]
+
+missing_packages = []
+for package in required_packages:
+    try:
+        if package == "dotenv":
+            import dotenv
+        elif package == "pypdf":
+            import pypdf
+        elif package == "langchain_text_splitters":
+            import langchain_text_splitters
+        elif package == "langchain_community":
+            import langchain_community
+        elif package == "langchain_openai":
+            import langchain_openai
+        elif package == "openai":
+            import openai
+        elif package == "faiss-cpu":
+            try:
+                import faiss
+
+                print(f"✓ Пакет {package} установлен (версия: доступен)")
+            except ImportError:
+                missing_packages.append(package)
+        print(f"✓ Пакет {package} установлен")
+    except ImportError:
+        print(f"✗ Пакет {package} не установлен")
+        missing_packages.append(package)
+
+if missing_packages:
+    print(f"\nНеобходимо установить следующие пакеты: {', '.join(missing_packages)}")
+    print("Выполните команду:")
+    print(f"pip install {' '.join(missing_packages)}")
+    sys.exit(1)
+
+# Теперь можно безопасно импортировать нужные модули
 try:
     from dotenv import load_dotenv
     from pypdf import PdfReader
-    # Обновлен импорт - используем новое расположение текстовых сплиттеров
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_community.document_loaders import (
         TextLoader, PyPDFLoader, Docx2txtLoader, UnstructuredHTMLLoader
     )
     from langchain_community.vectorstores import FAISS
     from langchain_openai import OpenAIEmbeddings
+
+    print("Все необходимые модули успешно импортированы")
 except ImportError as e:
     print(f"Ошибка импорта: {e}")
     print("Для работы скрипта необходимо установить библиотеки. Запустите:")
-    print("pip install langchain langchain_community langchain_openai langchain_text_splitters pypdf python-dotenv")
+    print(
+        "pip install langchain langchain_community langchain_openai langchain_text_splitters pypdf python-dotenv faiss-cpu openai")
     sys.exit(1)
 
 # Загрузка переменных окружения из .env файла, если он существует
 load_dotenv()
+print("Переменные окружения загружены из .env файла (если он существует)")
 
 # Константы
 DEFAULT_DOCS_DIR = "./docs"  # Директория с документами внутри проекта
 INDEX_DIR = "./index"  # Путь для сохранения индекса внутри проекта
 RENDER_INDEX_DIR = "/data"  # Путь к директории Render для возможности прямого копирования
+
+# Оптимизированные параметры для разбиения текста
+CHUNK_SIZE = 1200  # Уменьшенный размер чанка для более точного поиска
+CHUNK_OVERLAP = 150  # Умеренное перекрытие для связности
+MAX_FILE_SIZE = 52428800  # 50 МБ - максимальный размер файла для индексации
 
 
 def parse_arguments():
@@ -59,6 +110,10 @@ def parse_arguments():
                         help='Максимальное количество документов для обработки (0 = все документы)')
     parser.add_argument('--direct-copy', action='store_true',
                         help='Копировать индекс напрямую в директорию Render (для запуска на Render)')
+    parser.add_argument('--chunk-size', type=int, default=CHUNK_SIZE,
+                        help=f'Размер чанка для разбиения текста (по умолчанию: {CHUNK_SIZE})')
+    parser.add_argument('--chunk-overlap', type=int, default=CHUNK_OVERLAP,
+                        help=f'Перекрытие чанков (по умолчанию: {CHUNK_OVERLAP})')
 
     return parser.parse_args()
 
@@ -90,9 +145,10 @@ def extract_title(text, filename):
         return f"Документ: {filename}"
 
 
-def build_index(docs_dir, max_docs=0):
+def build_index(docs_dir, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP, max_docs=0):
     """Строит FAISS индекс из всех документов в указанной директории с улучшениями"""
     print(f"Начинаем индексацию документов из {docs_dir}...")
+    print(f"Параметры индексации: размер чанка = {chunk_size}, перекрытие = {chunk_overlap}")
 
     # Проверяем наличие директории с документами
     if not os.path.exists(docs_dir):
@@ -113,9 +169,19 @@ def build_index(docs_dir, max_docs=0):
     all_files = list(docs_path.glob("**/*.*"))  # Ищем файлы и в поддиректориях
     print(f"Найдено всего файлов: {len(all_files)}")
 
-    # Фильтруем только поддерживаемые форматы
+    # Фильтруем только поддерживаемые форматы и файлы не больше MAX_FILE_SIZE
     supported_extensions = [".pdf", ".docx", ".txt", ".html"]
-    files_to_process = [f for f in all_files if f.suffix.lower() in supported_extensions]
+    files_to_process = []
+
+    for f in all_files:
+        if f.suffix.lower() in supported_extensions:
+            file_size = f.stat().st_size
+            if file_size > MAX_FILE_SIZE:
+                print(
+                    f"Пропуск слишком большого файла: {f.name} ({file_size / 1024 / 1024:.2f} МБ > {MAX_FILE_SIZE / 1024 / 1024:.2f} МБ)")
+                continue
+            files_to_process.append(f)
+
     print(f"Файлы для обработки: {len(files_to_process)}")
 
     # Если указано ограничение, берем только указанное количество файлов
@@ -135,8 +201,25 @@ def build_index(docs_dir, max_docs=0):
         print("Пожалуйста, добавьте документы в форматах PDF, DOCX, TXT или HTML и запустите скрипт снова.")
         return None
 
-    # Создаем векторайзер для эмбеддингов
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    # Проверяем API ключ
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("ОШИБКА: Ключ API OpenAI не найден в переменных окружения")
+        print("Установите ключ через --openai-api-key или в .env файле (OPENAI_API_KEY=...)")
+        return None
+
+    print("Ключ API OpenAI найден. Проверяем работоспособность...")
+
+    # Создаем векторайзер для эмбеддингов и проверяем его работу
+    try:
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        # Простая проверка API
+        test_embedding = embeddings.embed_query("тестовый запрос")
+        print(f"API OpenAI работает! Размер тестового эмбеддинга: {len(test_embedding)}")
+    except Exception as e:
+        print(f"ОШИБКА при проверке API OpenAI: {e}")
+        print("Проверьте правильность ключа API")
+        return None
 
     # Инициализируем словарь для хранения чанков
     chunk_store = {}
@@ -166,39 +249,14 @@ def build_index(docs_dir, max_docs=0):
             pages = loader.load()
             print(f"  Загружено страниц: {len(pages)}")
 
-            # Расширенная обработка метаданных для улучшения поиска
+            # Упрощенная обработка метаданных - фокус на улучшении поиска
             for page in pages:
                 # Получаем базовый заголовок
                 source_title = extract_title(page.page_content, file.name)
 
-                # Добавляем расширенные метаданные
+                # Добавляем основные метаданные
                 page.metadata["source"] = source_title
-
-                # Добавляем ключевые слова для улучшения поиска
-                first_lines = page.page_content.splitlines()[:20]
-                first_text = " ".join(first_lines)
-
-                # Поиск важных терминов для индексации
-                keywords = []
-                important_terms = [
-                    "риск", "аппетит", "капитал", "ВПОДК", "норматив", "банк",
-                    "финансов", "отчетность", "требования", "положение",
-                    "правила", "МСФО", "IFRS", "IAS"
-                ]
-
-                for term in important_terms:
-                    if term.lower() in first_text.lower() or term.lower() in file.name.lower():
-                        keywords.append(term)
-
-                # Добавляем ключевые слова в метаданные, если они найдены
-                if keywords:
-                    page.metadata["keywords"] = ", ".join(keywords)
-
-                # Определяем тип документа для лучшей категоризации
-                if any(standard in file.name.upper() for standard in ["МСФО", "IAS", "IFRS"]):
-                    page.metadata["document_type"] = "стандарт"
-                elif any(law in file.name.lower() for law in ["закон", "зн", "правил", "кодекс"]):
-                    page.metadata["document_type"] = "нормативный акт"
+                page.metadata["filename"] = file.name
 
                 # Добавляем в общий список
                 all_docs.append(page)
@@ -222,12 +280,12 @@ def build_index(docs_dir, max_docs=0):
         print("Нет документов для индексации")
         return None
 
-    # Разбиваем документы на чанки с улучшенными параметрами
-    print("\nРазбиваем документы на чанки...")
+    # Разбиваем документы на чанки с оптимизированными параметрами
+    print(f"\nРазбиваем документы на чанки с размером {chunk_size} и перекрытием {chunk_overlap}...")
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=4000,  # Увеличенный размер чанка для лучшего сохранения контекста
-        chunk_overlap=500,  # Больше перекрытие для связности
-        separators=["\n\n", "\n", ".", " ", ""]  # Добавлен разделитель по предложениям
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", ".", " ", ""]  # Разделители для более естественного разбиения
     )
 
     texts = splitter.split_documents(all_docs)
@@ -284,7 +342,7 @@ def build_index(docs_dir, max_docs=0):
 
             # Пауза для соблюдения лимитов API
             if end_idx < len(texts):
-                pause_time = 10
+                pause_time = 1
                 print(f"Пауза {pause_time} секунд для соблюдения лимитов API...")
                 time.sleep(pause_time)
 
@@ -312,13 +370,28 @@ def build_index(docs_dir, max_docs=0):
 
     print("FAISS индекс успешно создан!")
 
+    # Выполняем тестовый поиск для проверки качества индекса
+    print("\nВыполняем тестовый поиск для проверки качества индекса...")
+    try:
+        test_query = "Требования к капиталу"
+        test_docs = db.similarity_search(test_query, k=2)
+        print(f"Тестовый поиск успешен. Найдено {len(test_docs)} документов.")
+        if len(test_docs) > 0:
+            print(f"Пример найденного контента: {test_docs[0].page_content[:100]}...")
+    except Exception as e:
+        print(f"Предупреждение: Тестовый поиск не удался: {e}")
+        print("Индекс создан, но может иметь проблемы с поиском.")
+
     return {
         "vectorstore": db,
         "chunk_store": chunk_store,
         "document_count": len(all_docs),
         "chunk_count": len(texts),
-        "error_files": error_files
+        "error_files": error_files,
+        "chunk_size": chunk_size,
+        "chunk_overlap": chunk_overlap
     }
+
 
 def save_index_to_directory(index_data, output_dir):
     """Сохраняет индекс и связанные данные в указанную директорию"""
@@ -344,6 +417,8 @@ def save_index_to_directory(index_data, output_dir):
         "document_count": index_data["document_count"],
         "chunk_count": index_data["chunk_count"],
         "error_count": len(index_data["error_files"]),
+        "chunk_size": index_data.get("chunk_size", CHUNK_SIZE),
+        "chunk_overlap": index_data.get("chunk_overlap", CHUNK_OVERLAP),
     }
 
     with open(metadata_path, 'w', encoding='utf-8') as f:
@@ -362,7 +437,7 @@ def save_index_to_directory(index_data, output_dir):
     with open(last_updated_path, 'w', encoding='utf-8') as f:
         f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (индекс создан локально)")
 
-    # Создаем README файл
+    # Создаем README файл с информацией о настройках индекса
     readme_path = os.path.join(output_dir, "README.md")
     with open(readme_path, 'w', encoding='utf-8') as f:
         f.write(f"""# FAISS индекс для RAG чат-бота
@@ -373,6 +448,11 @@ def save_index_to_directory(index_data, output_dir):
 - Всего документов: {index_data["document_count"]}
 - Всего чанков: {index_data["chunk_count"]}
 - Файлов с ошибками: {len(index_data["error_files"])}
+
+## Настройки индексации
+- Размер чанка: {index_data.get("chunk_size", CHUNK_SIZE)} символов
+- Перекрытие чанков: {index_data.get("chunk_overlap", CHUNK_OVERLAP)} символов
+- Модель эмбеддингов: text-embedding-3-small
 
 Этот индекс создан автоматически с помощью скрипта `build_index_local.py`.
 """)
@@ -401,6 +481,11 @@ def copy_index_to_render(local_index_dir, render_index_dir):
             print(f"Ошибка: Индекс не найден в {local_index_dir}")
             return False
 
+        # Создаем файл блокировки для предотвращения одновременного доступа
+        lock_file = os.path.join(render_index_dir, "copy_in_progress.lock")
+        with open(lock_file, 'w') as f:
+            f.write(f"Copy started at {datetime.now().isoformat()}")
+
         # Копируем все файлы
         for item in os.listdir(local_index_dir):
             source = os.path.join(local_index_dir, item)
@@ -421,6 +506,10 @@ def copy_index_to_render(local_index_dir, render_index_dir):
 
         with open(os.path.join(render_index_dir, "index_copied_flag.txt"), "w", encoding="utf-8") as f:
             f.write(f"Индекс скопирован из локальной директории в {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # Удаляем файл блокировки
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
 
         print(f"Индекс успешно скопирован в {render_index_dir}")
         return True
@@ -450,6 +539,7 @@ def main():
 
     print(f"Директория с документами: {args.docs_dir}")
     print(f"Директория для сохранения индекса: {INDEX_DIR}")
+    print(f"Параметры чанков: размер={args.chunk_size}, перекрытие={args.chunk_overlap}")
 
     # Проверяем запущен ли скрипт на Render
     is_render = os.environ.get("RENDER") == "true"
@@ -461,8 +551,14 @@ def main():
     else:
         print(f"Стандартный режим. Индекс будет сохранен в локальную директорию {INDEX_DIR}")
 
-    # Строим индекс из локальной директории документов
-    index_data = build_index(args.docs_dir, args.max_docs)
+    # Строим индекс из локальной директории документов с переданными параметрами
+    index_data = build_index(
+        args.docs_dir,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+        max_docs=args.max_docs
+    )
+
     if not index_data:
         print("Ошибка: не удалось создать индекс")
         return 1
@@ -493,6 +589,7 @@ def main():
 
     print(f"\nГотово! Общее время выполнения: {int(minutes)} мин {int(seconds)} сек")
     print(f"Создан индекс из {index_data['document_count']} документов и {index_data['chunk_count']} чанков")
+    print(f"Размер чанка: {args.chunk_size}, перекрытие: {args.chunk_overlap}")
     print(f"Индекс сохранен в директории: {INDEX_DIR}")
 
     if args.direct_copy or is_render:
@@ -506,5 +603,21 @@ def main():
     return 0
 
 
+# Прямой запуск скрипта
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        print(f"Запуск скрипта в режиме main...")
+        exit_code = main()
+        print("\nПроцесс индексации завершен.")
+        if exit_code == 0:
+            print("Индекс успешно создан и сохранен!")
+        else:
+            print(f"Процесс завершен с кодом: {exit_code}")
+        sys.exit(exit_code)
+    except KeyboardInterrupt:
+        print("\nПроцесс прерван пользователем.")
+        sys.exit(130)
+    except Exception as e:
+        print(f"\nНепредвиденная ошибка: {e}")
+        traceback.print_exc()
+        sys.exit(1)
