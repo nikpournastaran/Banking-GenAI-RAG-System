@@ -16,7 +16,8 @@ import json
 import shutil
 import sys
 import traceback
-
+from langchain_anthropic import ChatAnthropic
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI  # ChatOpenAI можно оставить как запасной вариант
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 
@@ -279,6 +280,14 @@ async def startup_event():
     index_in_persistent = os.path.exists(os.path.join(INDEX_PATH, "index.faiss"))
     print(f"\nИндекс в persistent storage: {'Найден' if index_in_persistent else 'Не найден'}")
 
+    # Проверяем наличие необходимых API ключей
+    if not os.environ.get("OPENAI_API_KEY"):
+        print("ВНИМАНИЕ: Отсутствует ключ OPENAI_API_KEY для работы эмбеддингов")
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("ВНИМАНИЕ: Отсутствует ключ ANTHROPIC_API_KEY для работы с Claude")
+        print("Бот может работать некорректно без этих ключей.")
+
     # Проверяем наличие локального индекса
     local_index_file = os.path.join(LOCAL_INDEX_PATH, "index.faiss")
     local_index_exists = os.path.exists(local_index_file)
@@ -462,16 +471,25 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
                 print(f"  {i + 1}. Вопрос: {question[:50]}...")
                 print(f"     Ответ: {answer[:50]}...")
 
-        # Проверяем API ключ
+        # Проверяем API ключи
         openai_api_key = os.getenv("OPENAI_API_KEY")
+        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+
         if not openai_api_key:
             print("ОШИБКА: Ключ API OpenAI не найден в переменных окружения")
             return JSONResponse({
-                "answer": "Ошибка: Не найден ключ API OpenAI. Пожалуйста, проверьте настройки .env файла.",
+                "answer": "Ошибка: Не найден ключ API OpenAI для эмбеддингов. Пожалуйста, проверьте настройки .env файла.",
                 "sources": ""
             }, status_code=500)
 
-        # Проверка валидности ключа OpenAI
+        if not anthropic_api_key:
+            print("ОШИБКА: Ключ API Anthropic не найден в переменных окружения")
+            return JSONResponse({
+                "answer": "Ошибка: Не найден ключ API Anthropic для Claude. Пожалуйста, проверьте настройки .env файла.",
+                "sources": ""
+            }, status_code=500)
+
+        # Проверка валидности ключа OpenAI для эмбеддингов
         try:
             print("Проверка API ключа OpenAI...")
             embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
@@ -483,7 +501,7 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
             print(error_msg)
             traceback.print_exc()
             return JSONResponse({
-                "answer": f"Извините, возникла проблема с сервисом OpenAI. Пожалуйста, попробуйте позже.",
+                "answer": f"Извините, возникла проблема с сервисом OpenAI для поиска. Пожалуйста, попробуйте позже.",
                 "sources": ""
             }, status_code=500)
 
@@ -501,25 +519,22 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
                 "sources": ""
             }, status_code=500)
 
-        # Подготовка контекста из истории диалога - адаптировано из локального бота
+        # Подготовка контекста из истории диалога
         dialog_context = ""
         if chat_history:
             dialog_context = "История диалога:\n"
             for i, (prev_q, prev_a) in enumerate(chat_history):
                 dialog_context += f"Вопрос пользователя: {prev_q}\nТвой ответ: {prev_a}\n\n"
 
-        # Обогащенный запрос с контекстом - берем только последние обмены для поиска
-        # Это уменьшает шум при поиске, но сохраняет релевантность запроса
+        # Обогащенный запрос с контекстом
         recent_dialogue = " ".join([qa[0] for qa in chat_history[-2:]]) if chat_history else ""
-
-        # Усиливаем текущий вопрос, добавляя к нему недавний контекст
         enhanced_query = f"{recent_dialogue} {q}" if recent_dialogue else q
 
         # Получаем релевантные документы с обработкой исключений
         try:
             print(f"Выполняется поиск по запросу: '{enhanced_query[:50]}...'")
 
-            # Используем MMR с оптимизированными параметрами для лучшего баланса
+            # Используем MMR с оптимизированными параметрами для баланса
             # между релевантностью и разнообразием
             retriever = vectorstore.as_retriever(
                 search_type="mmr",
@@ -554,37 +569,39 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
             for i, doc in enumerate(relevant_docs):
                 context += f"Документ {i + 1}: {doc.page_content}\n\n"
 
-        # Адаптируем системный промпт из локального бота для лучшего ответа
+        # Системный промпт, оптимизированный для Claude
         system_prompt = """
-        Ты ассистент с доступом к базе знаний. Используй информацию из базы знаний для ответа на вопросы.
+        Ты ассистент с доступом к базе знаний по финансовым и юридическим документам. 
+        Используй информацию из базы знаний для ответа на вопросы.
 
         ОЧЕНЬ ВАЖНО: При ответе обязательно учитывай историю диалога и предыдущие вопросы пользователя!
         Если пользователь задает вопрос, который связан с предыдущим (например "Как его рассчитать?"), 
-        то обязательно восстанови контекст из предыдущих сообщений.
+        обязательно восстанови контекст из предыдущих сообщений.
 
-        Если в базе знаний нет достаточной информации для полного ответа, честно признайся, что не знаешь.
+        Если в базе знаний нет достаточной информации для полного ответа:
+        1. Честно признайся, что конкретной информации нет в базе знаний
+        2. Если можешь дать общий ответ из своих знаний, сделай это, но четко отмечай, что это общая информация, а не из конкретных документов
 
-        Форматирование ответа:
-        1. Используй обычный текст с переносами строк для абзацев
-        2. Для списков используй обычные маркеры "-" или "1.", "2." и т.д.
-        3. Выделяй важные концепции с помощью символов * для выделения
-
-        Твоя задача — отвечать максимально информативно и точно по контексту, сохраняя преемственность диалога.
-        Если возможно, цитируй соответствующие фрагменты из найденных документов.
-
-        Если в вопросе есть местоимения ("он", "это", "такой"), используй историю диалога, чтобы понять, о чём речь.
+        Когда отвечаешь на вопросы, связанные с финансовыми или юридическими темами:
+        - Цитируй конкретные положения из найденных документов, когда это уместно
+        - Приводи точные определения терминов из документов
+        - Если речь идет о процедуре или расчете, описывай шаги последовательно
 
         Если пользователь спрашивает "как рассчитывается" или "как определяется" некий термин, 
         и в базе знаний отсутствует точная формула или численный метод, 
         ты должен:
-        - интерпретировать вопрос шире — как просьбу объяснить **как определяется, из чего состоит, какие компоненты, лимиты или методология используются**
-        - описать **подходы, параметры и логику**, стоящие за определением или управлением этим понятием
-        - НЕ путать такие вопросы с расчётом нормативов капитала или других несвязанных показателей
+        - Интерпретировать вопрос шире — как просьбу объяснить как определяется, из чего состоит, какие компоненты, лимиты или методология используются
+        - Описать подходы, параметры и логику, стоящие за определением или управлением этим понятием
 
-        Твоя цель — дать экспертный, логичный и понятный ответ, даже если прямых данных нет, используя всё, что тебе доступно.
+        Форматирование ответа:
+        - Используй ясные, хорошо структурированные абзацы
+        - Для списков используй маркеры "-" или нумерацию "1.", "2."
+        - Выделяй важные термины и концепции с помощью *звездочек*
+
+        Твоя цель — дать максимально точный, информативный и понятный ответ, опираясь в первую очередь на предоставленные документы.
         """
 
-        # Полный промпт для LLM - адаптирован из локального бота
+        # Полный промпт для Claude
         full_prompt = f"""
         {system_prompt}
 
@@ -600,23 +617,37 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
         Цитируй подходящие фрагменты из базы знаний, когда это помогает дать точный ответ.
         """
 
-        # Запрос к LLM с обработкой исключений
+        # Запрос к Claude с обработкой исключений
         try:
-            print("Инициализация модели LLM...")
-            llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.2)
+            print("Инициализация модели Claude...")
+            # Используем Claude 3.5 Haiku для всех запросов
+            from langchain_anthropic import ChatAnthropic
+            llm = ChatAnthropic(model="claude-3-haiku-20240307", temperature=0.2)
 
-            print("Отправка запроса к LLM...")
+            print("Отправка запроса к Claude...")
             result = llm.invoke(full_prompt)
-            print("Ответ от LLM получен")
+            print("Ответ от Claude получен")
             answer = result.content
+
         except Exception as e:
-            error_msg = f"Ошибка при работе с LLM: {str(e)}"
+            error_msg = f"Ошибка при работе с Claude: {str(e)}"
             print(error_msg)
             traceback.print_exc()
-            return JSONResponse({
-                "answer": "Извините, произошла ошибка в сервисе языковой модели. Пожалуйста, попробуйте позже.",
-                "sources": ""
-            }, status_code=500)
+
+            # Резервный вариант - переходим на OpenAI в случае ошибки Claude
+            try:
+                print("Ошибка Claude, пробуем резервный вариант с OpenAI...")
+                from langchain_openai import ChatOpenAI
+                backup_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
+                result = backup_llm.invoke(full_prompt)
+                answer = result.content
+                print("Получен ответ от резервной модели OpenAI")
+            except Exception as e2:
+                print(f"Ошибка и в резервной модели: {e2}")
+                return JSONResponse({
+                    "answer": "Извините, произошла ошибка в сервисе языковой модели. Пожалуйста, попробуйте позже.",
+                    "sources": ""
+                }, status_code=500)
 
         # Сохраняем в историю диалога
         session_memories[session_id].append((q, answer))

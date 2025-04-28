@@ -5,16 +5,20 @@ python-dotenv==1.0.1
 python-multipart==0.0.9
 
 # Set fixed compatible versions for LangChain ecosystem
-langchain==0.1.16
-langchain-openai==0.0.8
-langchain-community==0.0.36
-langchain-text-splitters==0.0.2
+langchain>=0.3.24
+langchain-openai>=0.3.14
+langchain-community>=0.3.22
+langchain-text-splitters>=0.3.8
+langchain-core>=0.3.56
+langchain-anthropic>=0.3.12
 
 # Vector database
 faiss-cpu==1.7.4
 
-# OpenAI
-openai==1.12.0
+# LLM providers
+openai>=1.76.0
+anthropic>=0.50.0
+tiktoken>=0.9.0
 
 # Document processing - minimal dependencies
 pypdf==4.0.1

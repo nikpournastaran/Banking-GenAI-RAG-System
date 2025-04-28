@@ -15,12 +15,10 @@ import tempfile
 import json
 import shutil
 import sys
+import traceback
 
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain.chains import ConversationalRetrievalChain
-from langchain.memory import ConversationBufferMemory
-import traceback
 
 load_dotenv()
 
@@ -28,7 +26,7 @@ load_dotenv()
 app = FastAPI(
     title="RAG Chat Bot",
     description="Чат-бот с использованием Retrieval-Augmented Generation",
-    version="1.0.0"
+    version="1.0.1"
 )
 
 # Настройка CORS
@@ -52,7 +50,7 @@ app.add_middleware(
 static_dir = "."
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-# Константы
+# Константы - сохраняем пути к индексу как в новом коде
 INDEX_PATH = "/data"  # Основной диск на Render
 LOCAL_INDEX_PATH = "./index"  # Локальный путь к индексу в проекте
 
@@ -178,8 +176,20 @@ def load_vectorstore():
 
     try:
         print("Попытка загрузки индекса из:", INDEX_PATH)
-        vectorstore = FAISS.load_local(INDEX_PATH, OpenAIEmbeddings(), allow_dangerous_deserialization=True)
+        vectorstore = FAISS.load_local(INDEX_PATH, OpenAIEmbeddings(model="text-embedding-3-small"),
+                                       allow_dangerous_deserialization=True)
         print("Векторное хранилище успешно загружено")
+
+        # Дополнительная проверка векторного хранилища
+        try:
+            # Простой тестовый запрос для проверки функциональности
+            test_query = "тестовый запрос"
+            _ = vectorstore.similarity_search(test_query, k=1)
+            print("Проверка функциональности индекса успешна")
+        except Exception as e:
+            print(f"Предупреждение: Индекс загружен, но при тестировании возникла ошибка: {e}")
+            # Продолжаем работу, так как основная загрузка прошла успешно
+
         return vectorstore
     except Exception as e:
         print("Ошибка при загрузке индекса:", e)
@@ -396,6 +406,16 @@ def get_index_info():
             except Exception as e:
                 result["copied_at_error"] = str(e)
 
+        # Добавляем количество документов и чанков в chunk_store, если он есть
+        chunk_store_path = os.path.join(INDEX_PATH, "chunk_store.json")
+        if os.path.exists(chunk_store_path):
+            try:
+                with open(chunk_store_path, 'r', encoding='utf-8') as f:
+                    chunk_store = json.load(f)
+                    result["chunk_count"] = len(chunk_store)
+            except Exception as e:
+                result["chunk_store_error"] = str(e)
+
         return result
     except Exception as e:
         return {"status": "error", "message": f"Ошибка при получении информации об индексе: {str(e)}"}
@@ -435,6 +455,13 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
         session_last_activity[session_id] = time.time()
         chat_history = session_memories[session_id]
 
+        # Логируем текущую историю чата
+        if chat_history:
+            print(f"История диалога для сессии {session_id} (всего {len(chat_history)} обменов):")
+            for i, (question, answer) in enumerate(chat_history[-3:]):  # Выводим последние 3 обмена для краткости
+                print(f"  {i + 1}. Вопрос: {question[:50]}...")
+                print(f"     Ответ: {answer[:50]}...")
+
         # Проверяем API ключ
         openai_api_key = os.getenv("OPENAI_API_KEY")
         if not openai_api_key:
@@ -447,7 +474,7 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
         # Проверка валидности ключа OpenAI
         try:
             print("Проверка API ключа OpenAI...")
-            embeddings = OpenAIEmbeddings()
+            embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
             # Маленький тест для проверки работоспособности API
             _ = embeddings.embed_query("тестовый запрос")
             print("API ключ OpenAI валиден")
@@ -474,156 +501,122 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
                 "sources": ""
             }, status_code=500)
 
-        # Настраиваем retriever - используем MMR для лучшего поиска
-        print("Настройка retriever...")
-        retriever = vectorstore.as_retriever(
-            search_type="mmr",
-            search_kwargs={
-                "k": 4,  # Возвращаем 4 наиболее подходящих документа
-                "fetch_k": 10  # Из списка 10 наиболее похожих
-            }
-        )
+        # Подготовка контекста из истории диалога - адаптировано из локального бота
+        dialog_context = ""
+        if chat_history:
+            dialog_context = "История диалога:\n"
+            for i, (prev_q, prev_a) in enumerate(chat_history):
+                dialog_context += f"Вопрос пользователя: {prev_q}\nТвой ответ: {prev_a}\n\n"
 
-        # Получаем релевантные документы
+        # Обогащенный запрос с контекстом - берем только последние обмены для поиска
+        # Это уменьшает шум при поиске, но сохраняет релевантность запроса
+        recent_dialogue = " ".join([qa[0] for qa in chat_history[-2:]]) if chat_history else ""
+
+        # Усиливаем текущий вопрос, добавляя к нему недавний контекст
+        enhanced_query = f"{recent_dialogue} {q}" if recent_dialogue else q
+
+        # Получаем релевантные документы с обработкой исключений
         try:
-            relevant_docs = []
+            print(f"Выполняется поиск по запросу: '{enhanced_query[:50]}...'")
 
-            # Используем диалоговую модель для улучшения запроса
-            llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.2)
-
-            # Подготовка истории чата для ConversationalRetrievalChain
-            chat_history_tuples = [(q_prev, a_prev) for q_prev, a_prev in chat_history]
-
-            # Создаем цепочку с диалогом
-            qa_chain = ConversationalRetrievalChain.from_llm(
-                llm=llm,
-                retriever=retriever,
-                return_source_documents=True,
-                verbose=True
+            # Используем MMR с оптимизированными параметрами для лучшего баланса
+            # между релевантностью и разнообразием
+            retriever = vectorstore.as_retriever(
+                search_type="mmr",
+                search_kwargs={
+                    "k": 6,  # Общее количество результатов
+                    "fetch_k": 12,  # Уменьшено с 20 до 12 для большей точности
+                    "lambda_mult": 0.7  # Увеличено с 0.5 до 0.7 для большего акцента на релевантности
+                }
             )
 
-            # Выполняем запрос с учетом истории диалога
-            print(f"Выполнение запроса с историей ({len(chat_history_tuples)} предыдущих сообщений)...")
-            result = qa_chain({"question": q, "chat_history": chat_history_tuples})
-
-            answer = result["answer"]
-            relevant_docs = result["source_documents"]
-
+            relevant_docs = retriever.get_relevant_documents(enhanced_query)
             print(f"Найдено {len(relevant_docs)} релевантных документов")
+
+            # Вывод метаданных первого документа для диагностики
             if relevant_docs:
                 doc_metadata = relevant_docs[0].metadata
                 print(f"Пример метаданных документа: {doc_metadata}")
-
         except Exception as e:
-            error_msg = f"Ошибка при выполнении запроса: {str(e)}"
+            error_msg = f"Ошибка при поиске документов: {str(e)}"
             print(error_msg)
             traceback.print_exc()
 
-            # Если не удалось использовать ConversationalRetrievalChain,
-            # используем прямой запрос к vectorstore
-            try:
-                print("Пробуем резервный вариант с прямым запросом...")
+            # Пробуем продолжить без документов
+            relevant_docs = []
+            print("Продолжаем работу без документов...")
 
-                # Обогащенный запрос с контекстом
-                recent_dialogue = " ".join([qa[0] + " " + qa[1] for qa in chat_history[-3:]]) if chat_history else ""
-                enhanced_query = f"{recent_dialogue} {q}".strip()
+        # Готовим контекст для LLM
+        if len(relevant_docs) == 0:
+            context = "Документов не найдено. Постарайся ответить, используя только историю диалога, если это возможно."
+        else:
+            context = ""
+            for i, doc in enumerate(relevant_docs):
+                context += f"Документ {i + 1}: {doc.page_content}\n\n"
 
-                relevant_docs = retriever.get_relevant_documents(enhanced_query)
-                print(f"Найдено {len(relevant_docs)} релевантных документов (резервный способ)")
+        # Адаптируем системный промпт из локального бота для лучшего ответа
+        system_prompt = """
+        Ты ассистент с доступом к базе знаний. Используй информацию из базы знаний для ответа на вопросы.
 
-                # Системный промпт
-                system_prompt = """
-                Ты ассистент с доступом к базе знаний. Используй информацию из базы знаний для ответа на вопросы.
+        ОЧЕНЬ ВАЖНО: При ответе обязательно учитывай историю диалога и предыдущие вопросы пользователя!
+        Если пользователь задает вопрос, который связан с предыдущим (например "Как его рассчитать?"), 
+        то обязательно восстанови контекст из предыдущих сообщений.
 
-                ОЧЕНЬ ВАЖНО: При ответе обязательно учитывай историю диалога и предыдущие вопросы пользователя!
-                Если пользователь задает вопрос, который связан с предыдущим (например "Как его рассчитать?"), 
-                то обязательно восстанови контекст из предыдущих сообщений.
+        Если в базе знаний нет достаточной информации для полного ответа, честно признайся, что не знаешь.
 
-                Если в базе знаний нет достаточной информации для полного ответа, честно признайся, что не знаешь.
+        Форматирование ответа:
+        1. Используй обычный текст с переносами строк для абзацев
+        2. Для списков используй обычные маркеры "-" или "1.", "2." и т.д.
+        3. Выделяй важные концепции с помощью символов * для выделения
 
-                ВАЖНОЕ ТРЕБОВАНИЕ К ФОРМАТИРОВАНИЮ:
-                1. Структурируй ответ с использованием АБЗАЦЕВ - каждый новый абзац должен начинаться с новой строки и отделяться ПУСТОЙ строкой.
-                2. Для создания абзаца используй ДВОЙНОЙ перенос строки (два символа новой строки).
-                3. Избегай длинных параграфов без разбивки - максимум 5-7 строк в одном абзаце.
-                4. Для списков используй следующие форматы:
-                   - Маркированный список: каждый пункт с новой строки, начиная с символа "•" или "-"
-                   - Нумерованный список: с новой строки, начиная с "1.", "2." и т.д.
-                5. НИКОГДА не используй HTML-теги (например <br>, <p>, <div> и т.д.)
-                6. Выделяй важные концепции с помощью символов * (для выделения) или ** (для сильного выделения)
+        Твоя задача — отвечать максимально информативно и точно по контексту, сохраняя преемственность диалога.
+        Если возможно, цитируй соответствующие фрагменты из найденных документов.
 
-                ПРИМЕР ПРАВИЛЬНОГО ФОРМАТИРОВАНИЯ:
+        Если в вопросе есть местоимения ("он", "это", "такой"), используй историю диалога, чтобы понять, о чём речь.
 
-                Первый абзац с объяснением. Здесь я описываю основную концепцию и даю ключевую информацию.
+        Если пользователь спрашивает "как рассчитывается" или "как определяется" некий термин, 
+        и в базе знаний отсутствует точная формула или численный метод, 
+        ты должен:
+        - интерпретировать вопрос шире — как просьбу объяснить **как определяется, из чего состоит, какие компоненты, лимиты или методология используются**
+        - описать **подходы, параметры и логику**, стоящие за определением или управлением этим понятием
+        - НЕ путать такие вопросы с расчётом нормативов капитала или других несвязанных показателей
 
-                Второй абзац с дополнительными деталями. Обрати внимание на пустую строку между абзацами.
+        Твоя цель — дать экспертный, логичный и понятный ответ, даже если прямых данных нет, используя всё, что тебе доступно.
+        """
 
-                Вот список важных моментов:
-                • Первый пункт списка
-                • Второй пункт списка
-                • Третий пункт списка
+        # Полный промпт для LLM - адаптирован из локального бота
+        full_prompt = f"""
+        {system_prompt}
 
-                Заключительный абзац с выводами.
+        {dialog_context}
 
-                КОНЕЦ ПРИМЕРА
+        Контекст из базы знаний (это наиболее релевантные документы):
+        {context}
 
-                Твоя задача — отвечать максимально информативно и точно по контексту, сохраняя преемственность диалога и правильное форматирование.
+        Текущий вопрос пользователя: {q}
 
-                Если в вопросе есть местоимения ("он", "это", "такой"), используй историю диалога, чтобы понять, о чём речь.
+        ВАЖНО: Если информация из базы знаний напрямую содержит ответ на вопрос пользователя, используй эту информацию В ПЕРВУЮ ОЧЕРЕДЬ, даже если твои общие знания содержат другую информацию.
+        Всегда приоритизируй информацию из базы знаний над своими общими знаниями.
+        Цитируй подходящие фрагменты из базы знаний, когда это помогает дать точный ответ.
+        """
 
-                Если пользователь спрашивает "как рассчитывается" или "как определяется" некий термин, 
-                и в базе знаний отсутствует точная формула или численный метод, 
-                ты должен:
-                - интерпретировать вопрос шире — как просьбу объяснить **как определяется, из чего состоит, какие компоненты, лимиты или методология используются**
-                - описать **подходы, параметры и логику**, стоящие за определением или управлением этим понятием
-                - НЕ путать такие вопросы с расчётом нормативов капитала или других несвязанных показателей
+        # Запрос к LLM с обработкой исключений
+        try:
+            print("Инициализация модели LLM...")
+            llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.2)
 
-                Твоя цель — дать экспертный, логичный и понятный ответ, даже если прямых данных нет, используя всё, что тебе доступно.
-                """
-
-                # Подготовка контекста из истории диалога
-                dialog_context = ""
-                if chat_history:
-                    dialog_context = "История диалога:\n"
-                    for i, (prev_q, prev_a) in enumerate(chat_history):
-                        dialog_context += f"Вопрос пользователя: {prev_q}\nТвой ответ: {prev_a}\n\n"
-
-                # Готовим контекст для LLM
-                if len(relevant_docs) == 0:
-                    context = "Документов не найдено. Постарайся ответить, используя только историю диалога, если это возможно."
-                else:
-                    context = ""
-                    for i, doc in enumerate(relevant_docs):
-                        context += f"Документ {i + 1}: {doc.page_content}\n\n"
-
-                # Полный промпт для LLM
-                full_prompt = f"""
-                {system_prompt}
-
-                {dialog_context}
-
-                Контекст из базы знаний:
-                {context}
-
-                Текущий вопрос пользователя: {q}
-
-                Дай подробный, содержательный ответ на основе предоставленной информации и с учётом предыдущего диалога.
-                Если вопрос связан с предыдущими вопросами, обязательно учти это в ответе.
-                """
-
-                # Запрос к LLM
-                print("Отправка резервного запроса к LLM...")
-                result_backup = llm.invoke(full_prompt)
-                answer = result_backup.content
-                print("Ответ от LLM получен (резервный способ)")
-
-            except Exception as e2:
-                error_msg2 = f"Ошибка при выполнении резервного запроса: {str(e2)}"
-                print(error_msg2)
-                traceback.print_exc()
-                return JSONResponse({
-                    "answer": "Извините, произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте позже.",
-                    "sources": ""
-                }, status_code=500)
+            print("Отправка запроса к LLM...")
+            result = llm.invoke(full_prompt)
+            print("Ответ от LLM получен")
+            answer = result.content
+        except Exception as e:
+            error_msg = f"Ошибка при работе с LLM: {str(e)}"
+            print(error_msg)
+            traceback.print_exc()
+            return JSONResponse({
+                "answer": "Извините, произошла ошибка в сервисе языковой модели. Пожалуйста, попробуйте позже.",
+                "sources": ""
+            }, status_code=500)
 
         # Сохраняем в историю диалога
         session_memories[session_id].append((q, answer))
@@ -665,102 +658,3 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
             "answer": f"Извините, произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте позже или обратитесь к администратору.",
             "sources": ""
         }, status_code=500)
-
-
-@app.get("/last-updated")
-def get_last_updated():
-    """Возвращает информацию о последнем обновлении индекса"""
-    last_updated_file = os.path.join(INDEX_PATH, "last_updated.txt")
-    copied_at_file = os.path.join(INDEX_PATH, "copied_at.txt")
-
-    result = {}
-
-    # Проверяем файл с датой последнего обновления
-    if os.path.exists(last_updated_file):
-        try:
-            with open(last_updated_file, "r", encoding="utf-8") as f:
-                last_updated = f.read().strip()
-                result["last_updated"] = last_updated
-        except Exception as e:
-            result["error_last_updated"] = f"Ошибка чтения файла: {str(e)}"
-
-    # Проверяем файл с датой последнего копирования
-    if os.path.exists(copied_at_file):
-        try:
-            with open(copied_at_file, "r", encoding="utf-8") as f:
-                copied_at = f.read().strip()
-                result["copied_at"] = copied_at
-        except Exception as e:
-            result["error_copied_at"] = f"Ошибка чтения файла: {str(e)}"
-
-    # Проверяем наличие локального индекса
-    local_index_file = os.path.join(LOCAL_INDEX_PATH, "index.faiss")
-    if os.path.exists(local_index_file):
-        result["local_index_exists"] = True
-        try:
-            local_metadata_file = os.path.join(LOCAL_INDEX_PATH, "index_metadata.json")
-            if os.path.exists(local_metadata_file):
-                with open(local_metadata_file, "r", encoding="utf-8") as f:
-                    local_metadata = json.load(f)
-                    result["local_index_info"] = local_metadata
-        except Exception as e:
-            result["local_index_error"] = f"Ошибка чтения метаданных: {str(e)}"
-    else:
-        result["local_index_exists"] = False
-
-    # Если информации нет вообще
-    if not result:
-        result["status"] = "info"
-        result["message"] = "Информация о индексе отсутствует"
-    else:
-        result["status"] = "success"
-
-    return result
-
-
-@app.get("/test-search")
-async def test_search(q: str = Form(...)):
-    """Тестирует поиск по базе знаний"""
-    try:
-        print(f"Тестовый поиск по запросу: {q[:50]}...")
-        vectorstore = load_vectorstore()
-
-        # Используем MMR для поиска, как в основном эндпоинте
-        retriever = veretriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
-
-        # Получаем документы
-        docs = retriever.get_relevant_documents(q)
-
-        # Форматируем результаты для ответа
-        results = []
-        for i, doc in enumerate(docs):
-            source = doc.metadata.get("source", "Источник неизвестен")
-            content_preview = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
-
-            results.append({
-                "index": i + 1,
-                "source": source,
-                "content_preview": content_preview
-            })
-
-        return {
-            "status": "success",
-            "query": q,
-            "results_count": len(results),
-            "results": results
-        }
-    except Exception as e:
-        error_msg = f"Ошибка при выполнении тестового поиска: {str(e)}"
-        print(error_msg)
-        traceback.print_exc()
-        return {
-            "status": "error",
-            "message": error_msg
-        }
-
-
-# Запуск сервера
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000)
