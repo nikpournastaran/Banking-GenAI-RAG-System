@@ -433,17 +433,29 @@ def telegram_bot_thread_function():
 
         logger.info("Telegram бот запущен и ожидает сообщений")
 
-        # Устанавливаем обработчик сигналов для корректного завершения
-        for s in (signal.SIGINT, signal.SIGTERM, signal.SIGABRT):
-            loop.add_signal_handler(s, lambda: asyncio.create_task(shutdown_bot(bot_app, loop)))
+        # УДАЛИТЬ ЭТОТ БЛОК:
+        # # Устанавливаем обработчик сигналов для корректного завершения
+        # for s in (signal.SIGINT, signal.SIGTERM, signal.SIGABRT):
+        #     loop.add_signal_handler(s, lambda: asyncio.create_task(shutdown_bot(bot_app, loop)))
 
-        # Держим бота работающим
-        loop.run_forever()
+        # Вместо этого просто ждем бесконечно
+        try:
+            loop.run_forever()
+        except KeyboardInterrupt:
+            # Обработка прерывания (будет перехвачено только в главном потоке)
+            pass
     except Exception as e:
         logger.error(f"Ошибка в потоке Telegram бота: {e}")
         traceback.print_exc()
     finally:
-        loop.close()
+        # Правильное завершение при выходе из функции
+        try:
+            if 'bot_app' in locals():
+                loop.run_until_complete(bot_app.stop())
+                loop.run_until_complete(bot_app.shutdown())
+            loop.close()
+        except Exception as e:
+            logger.error(f"Ошибка при завершении бота: {e}")
         logger.info("Поток Telegram бота завершен")
 
 
