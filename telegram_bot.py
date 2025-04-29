@@ -26,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия модуля
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 # Глобальная переменная для хранения загруженного индекса
 vectorstore = None
@@ -36,6 +36,20 @@ application = None
 
 # Максимальное количество токенов в ответе (для разбиения длинных ответов)
 MAX_MESSAGE_LENGTH = 4096
+
+
+def is_greeting(text):
+    """Проверяет, является ли текст приветствием."""
+    greetings = [
+        "привет", "здравствуй", "здравствуйте", "добрый день", "доброе утро",
+        "добрый вечер", "hi", "hello", "hey", "приветствую", "здарова",
+        "салют", "хай", "хеллоу"
+    ]
+    text_lower = text.lower()
+    # Проверяем, состоит ли весь текст только из приветствия
+    # или текст начинается с приветствия и содержит не более 3 слов
+    return (text_lower in greetings or
+            any(text_lower.startswith(g) for g in greetings) and len(text_lower.split()) <= 3)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -138,6 +152,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     processing_message = await update.message.reply_text("🔍 Ищу ответ на ваш вопрос...")
 
     try:
+        # Проверка на приветствие перед запросом к базе знаний
+        if is_greeting(user_input):
+            await processing_message.delete()  # Удаляем сообщение о поиске
+            greeting_response = f"Здравствуйте! Чем я могу вам помочь? Задайте вопрос по финансовым или юридическим темам."
+
+            # Сохраняем приветствие в историю диалога
+            session_memories[session_id].append((user_input, greeting_response))
+            if len(session_memories[session_id]) > 15:
+                session_memories[session_id] = session_memories[session_id][-15:]
+
+            await update.message.reply_text(greeting_response)
+            return  # Завершаем обработку сообщения
+
         # Ленивая загрузка индекса при первом запросе
         if vectorstore is None:
             try:
@@ -317,7 +344,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if relevant_docs:
             # Сохраняем релевантные документы в контексте пользователя для показа источников
             user_id_str = str(user_id)
-            if not hasattr(context.bot_data, 'user_sources'):
+
+            # Создаем хранилище для источников, если оно не существует
+            if not hasattr(context, 'bot_data'):
+                context.bot_data = {}
+            if 'user_sources' not in context.bot_data:
                 context.bot_data['user_sources'] = {}
 
             # Сохраняем только имена документов и короткие фрагменты содержимого
@@ -377,34 +408,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             user_id_str = str(user_id)
 
             # Проверяем, сохранены ли источники для этого пользователя
-            if hasattr(context.bot_data, 'user_sources') and user_id_str in context.bot_data['user_sources']:
-                sources = context.bot_data['user_sources'][user_id_str]
-                if sources:
-                    # Формируем сообщение с источниками
-                    sources_text = "📚 *Использованные источники:*\n\n"
-                    for i, source in enumerate(sources, 1):
-                        sources_text += f"{i}. *{source['title']}*\n"
-                        clean_content = source['content'].replace('_', ' ').replace('*', ' ')
-                        sources_text += f"Фрагмент: _{clean_content[:200]}_...\n\n"
-
-                    try:
-                        # Пробуем отправить с Markdown форматированием
-                        await query.message.reply_text(
-                            sources_text,
-                            parse_mode='Markdown'
-                        )
-                    except Exception as e:
-                        # Если есть проблемы с форматированием, отправляем без форматирования
-                        logger.error(f"Ошибка с Markdown: {e}")
-                        plain_text = "📚 Использованные источники:\n\n"
+            try:
+                if hasattr(context, 'bot_data') and 'user_sources' in context.bot_data and user_id_str in \
+                        context.bot_data['user_sources']:
+                    sources = context.bot_data['user_sources'][user_id_str]
+                    if sources:
+                        # Формируем сообщение с источниками
+                        sources_text = "📚 Использованные источники:\n\n"
                         for i, source in enumerate(sources, 1):
-                            plain_text += f"{i}. {source['title']}\n"
-                            plain_text += f"Фрагмент: {source['content'][:200]}...\n\n"
-                        await query.message.reply_text(plain_text)
+                            sources_text += f"{i}. {source['title']}\n"
+                            sources_text += f"Фрагмент: {source['content'][:200]}...\n\n"
+
+                        # Отправляем без Markdown для избежания ошибок форматирования
+                        await query.message.reply_text(sources_text)
+                    else:
+                        await query.message.reply_text("Источники для этого ответа не сохранены.")
                 else:
-                    await query.message.reply_text("Источники для этого ответа не сохранены.")
-            else:
-                await query.message.reply_text("Источники для этого ответа недоступны.")
+                    await query.message.reply_text("Источники для этого ответа недоступны.")
+            except Exception as e:
+                logger.error(f"Ошибка при показе источников: {e}")
+                await query.message.reply_text("Произошла ошибка при попытке показать источники.")
         else:
             await query.message.reply_text("Эта кнопка предназначена только для автора вопроса.")
 
