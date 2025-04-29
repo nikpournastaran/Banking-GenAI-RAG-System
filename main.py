@@ -27,6 +27,12 @@ from typing import Optional
 
 # Глобальная переменная для хранения экземпляра Telegram бота
 telegram_bot_app = None
+# Переменные для Telegram-бота
+TELEGRAM_BOT_ENABLED = bool(os.environ.get("TELEGRAM_BOT_TOKEN"))
+# Флаг запуска Telegram-бота
+telegram_bot_started = False
+
+telegram_sessions = {}
 
 load_dotenv()
 
@@ -206,6 +212,8 @@ def load_vectorstore():
 
 
 # Очистка старых сессий
+# Обновил функцию для очистки старых сессий: ----
+
 def clean_old_sessions():
     """Очищает старые сессии для экономии памяти"""
     current_time = time.time()
@@ -219,6 +227,18 @@ def clean_old_sessions():
             del session_memories[session_id]
         if session_id in session_last_activity:
             del session_last_activity[session_id]
+
+    # Очищаем также Telegram сессии, если модуль загружен
+    if 'telegram_sessions' in globals():
+        expired_telegram_sessions = [
+            user_id for user_id, session_id in telegram_sessions.items()
+            if session_id in expired_sessions
+        ]
+        for user_id in expired_telegram_sessions:
+            if user_id in telegram_sessions:
+                del telegram_sessions[user_id]
+
+    return len(expired_sessions)
 
 
 # Вспомогательная функция для проверки доступности директории
@@ -268,6 +288,8 @@ def check_directory_access(directory):
 # События приложения
 @app.on_event("startup")
 async def startup_event():
+    global telegram_bot_started
+
     print("Запуск приложения...")
     print(f"Текущая рабочая директория: {os.getcwd()}")
 
@@ -296,11 +318,11 @@ async def startup_event():
         print("Бот может работать некорректно без этих ключей.")
 
     # Проверяем наличие Telegram токена
-    if not os.environ.get("TELEGRAM_BOT_TOKEN"):
+    if TELEGRAM_BOT_ENABLED:
+        print("Ключ TELEGRAM_BOT_TOKEN найден. Telegram бот будет запущен.")
+    else:
         print("ВНИМАНИЕ: Отсутствует ключ TELEGRAM_BOT_TOKEN для Telegram бота")
         print("Telegram бот не будет запущен.")
-    else:
-        print("Ключ TELEGRAM_BOT_TOKEN найден. Telegram бот будет запущен.")
 
     # Проверяем наличие локального индекса
     local_index_file = os.path.join(LOCAL_INDEX_PATH, "index.faiss")
@@ -332,7 +354,7 @@ async def startup_event():
         print("Приложение может работать некорректно без индекса.")
 
     # Запускаем Telegram бота в отдельном потоке, если есть токен
-    if os.environ.get("TELEGRAM_BOT_TOKEN"):
+    if TELEGRAM_BOT_ENABLED and not telegram_bot_started:
         try:
             # Импортируем функцию запуска Telegram бота
             from telegram_bot import start_telegram_bot
@@ -340,10 +362,13 @@ async def startup_event():
             # Запускаем бота в отдельном потоке
             print("Запуск Telegram бота...")
             start_telegram_bot()
+            telegram_bot_started = True
             print("Telegram бот успешно запущен")
         except Exception as e:
             print(f"Ошибка при запуске Telegram бота: {str(e)}")
             traceback.print_exc()
+
+    print("Приложение запущено и готово к работе!")
 
 
 # Эндпоинты
@@ -566,12 +591,20 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
                 search_type="mmr",
                 search_kwargs={
                     "k": 6,  # Общее количество результатов
-                    "fetch_k": 12,  # Уменьшено с 20 до 12 для большей точности
-                    "lambda_mult": 0.7  # Увеличено с 0.5 до 0.7 для большего акцента на релевантности
+                    "fetch_k": 12,  # Оптимизированное количество кандидатов
+                    "lambda_mult": 0.7  # Баланс между релевантностью и разнообразием
                 }
             )
 
-            relevant_docs = retriever.get_relevant_documents(enhanced_query)
+            # Используем новый метод invoke вместо устаревшего get_relevant_documents
+            try:
+                # Пытаемся использовать новый метод invoke
+                relevant_docs = retriever.invoke(enhanced_query)
+            except (AttributeError, TypeError):
+                # Если не удалось, используем устаревший метод (но с предупреждением)
+                print("Используется устаревший метод get_relevant_documents. Рекомендуется обновить код в будущем.")
+                relevant_docs = retriever.get_relevant_documents(enhanced_query)
+
             print(f"Найдено {len(relevant_docs)} релевантных документов")
 
             # Вывод метаданных первого документа для диагностики
@@ -729,3 +762,41 @@ async def ask(q: str = Form(...), session_id: str = Cookie(None), response: Resp
             "answer": f"Извините, произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте позже или обратитесь к администратору.",
             "sources": ""
         }, status_code=500)
+
+
+# ---- Добавил новый эндпоинт для проверки состояния Telegram бота: ----
+
+@app.get("/telegram-status")
+def telegram_status(admin_token: str = Header(None)):
+    """Проверяет статус Telegram бота"""
+    # Проверка пароля администратора
+    admin_password = os.getenv("ADMIN_PASSWORD")
+    if not admin_password:
+        return JSONResponse({
+            "status": "error",
+            "message": "Пароль администратора не задан в конфигурации сервера"
+        }, status_code=500)
+
+    expected_token = hashlib.sha256(admin_password.encode()).hexdigest()
+    if not admin_token or admin_token != expected_token:
+        return JSONResponse({
+            "status": "error",
+            "message": "Доступ запрещен: неверный пароль администратора"
+        }, status_code=403)
+
+    status = {
+        "bot_enabled": TELEGRAM_BOT_ENABLED,
+        "bot_started": telegram_bot_started,
+        "telegram_sessions": len(telegram_sessions) if 'telegram_sessions' in globals() else 0,
+        "total_sessions": len(session_memories),
+    }
+
+    # Проверяем наличие модуля telegram_bot
+    try:
+        import telegram_bot
+        status["module_loaded"] = True
+        status["module_version"] = getattr(telegram_bot, "__version__", "Не указана")
+    except ImportError:
+        status["module_loaded"] = False
+
+    return JSONResponse(status)

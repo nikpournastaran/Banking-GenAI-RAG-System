@@ -7,14 +7,16 @@
 import os
 import logging
 import asyncio
+import threading
 from datetime import datetime
 import traceback
+import signal
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # Импортируем функции из основного модуля
-from main import load_vectorstore, session_memories, session_last_activity, SESSION_MAX_AGE, clean_old_sessions
+from main import load_vectorstore, session_memories, session_last_activity, SESSION_MAX_AGE, clean_old_sessions, telegram_sessions
 
 # Настройка логирования
 logging.basicConfig(
@@ -24,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 # Глобальная переменная для хранения загруженного индекса
 vectorstore = None
+
+# Глобальная переменная для хранения экземпляра приложения
+application = None
 
 # Соответствие между Telegram пользователями и сессиями в session_memories
 telegram_sessions = {}
@@ -140,10 +145,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 # Загружаем индекс асинхронно
                 vectorstore = await asyncio.to_thread(load_vectorstore)
             except Exception as e:
+                logger.error(f"Ошибка при загрузке индекса: {e}")
                 await processing_message.edit_text(
                     "❌ Ошибка при загрузке базы знаний. Пожалуйста, попробуйте позже."
                 )
-                logger.error(f"Ошибка при загрузке индекса: {e}")
                 return
 
         # Формируем контекст из истории диалога
@@ -155,19 +160,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # Выполняем поиск асинхронно, чтобы не блокировать основной поток
         try:
-            relevant_docs = await asyncio.to_thread(
-                vectorstore.as_retriever(
-                    search_type="mmr",
-                    search_kwargs={
-                        "k": 6,
-                        "fetch_k": 12,
-                        "lambda_mult": 0.7
-                    }
-                ).get_relevant_documents,
-                enhanced_query
+            # Используем новый метод invoke вместо устаревшего get_relevant_documents
+            retriever = vectorstore.as_retriever(
+                search_type="mmr",
+                search_kwargs={
+                    "k": 6,
+                    "fetch_k": 12,
+                    "lambda_mult": 0.7
+                }
             )
+
+            # Используем новый формат вызова через invoke если доступен
+            try:
+                # Пытаемся использовать новый метод invoke
+                relevant_docs = await asyncio.to_thread(
+                    lambda q: retriever.invoke(q),
+                    enhanced_query
+                )
+            except (AttributeError, TypeError):
+                # Если не удалось, используем устаревший метод (но с предупреждением)
+                logger.warning("Использование устаревшего метода get_relevant_documents. Рекомендуется обновить код.")
+                relevant_docs = await asyncio.to_thread(
+                    retriever.get_relevant_documents,
+                    enhanced_query
+                )
+
         except Exception as e:
             logger.error(f"Ошибка при поиске документов: {e}")
+            traceback.print_exc()
             relevant_docs = []
 
         # Подготовка контекста для модели
@@ -181,8 +201,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     doc_title = doc_title[:100] + "..."
                 context += f"{doc_title}: {doc.page_content}\n\n"
 
+        await processing_message.edit_text("🧠 Генерирую ответ...")
+
         # Подготовка системного промпта и запроса к модели LLM
-        # Используем тот же системный промпт, что и в main.py
         system_prompt = """
         Ты ассистент с доступом к базе знаний по финансовым и юридическим документам. 
         Используй информацию из базы знаний для ответа на вопросы.
@@ -242,8 +263,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         Цитируй подходящие фрагменты из базы знаний, когда это помогает дать точный ответ.
         """
 
-        await processing_message.edit_text("🧠 Генерирую ответ...")
-
         # Запрос к модели LLM асинхронно
         try:
             from langchain_anthropic import ChatAnthropic
@@ -285,16 +304,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Разбиваем на части по MAX_MESSAGE_LENGTH символов
             chunks = [answer[i:i + MAX_MESSAGE_LENGTH] for i in range(0, len(answer), MAX_MESSAGE_LENGTH)]
             for i, chunk in enumerate(chunks):
-                await update.message.reply_text(f"Часть {i + 1}/{len(chunks)}:\n\n{chunk}")
+                await update.message.reply_text(f"Часть {i+1}/{len(chunks)}:\n\n{chunk}")
 
-            # Добавляем кнопку для показа источников, если они есть
-            if relevant_docs:
-                keyboard = [
-                    [InlineKeyboardButton("📚 Показать источники",
-                                          callback_data=f"sources_{user_id}_{datetime.now().timestamp()}")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text("Ответ сформирован на основе документов:", reply_markup=reply_markup)
+        # Добавляем кнопку для показа источников, если они есть
+        if relevant_docs:
+            keyboard = [
+                [InlineKeyboardButton("📚 Показать источники", callback_data=f"sources_{user_id}_{datetime.now().timestamp()}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Ответ сформирован на основе документов:", reply_markup=reply_markup)
 
     except Exception as e:
         error_message = f"Произошла ошибка при обработке запроса: {str(e)}"
@@ -357,46 +375,85 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 def create_telegram_bot():
     """Создает и настраивает Telegram бота."""
+    global application
+
     # Получаем токен бота из переменных окружения
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not bot_token:
         logger.error("TELEGRAM_BOT_TOKEN не найден в переменных окружения")
         return None
 
-    # Создаем приложение
-    application = Application.builder().token(bot_token).build()
+    try:
+        # Создаем приложение
+        builder = Application.builder().token(bot_token)
+        # Установка более корректной работы с сигналами завершения
+        builder.post_stop(shutdown_handler)
+        application = builder.build()
 
-    # Добавляем обработчики команд
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("clear", clear_command))
+        # Добавляем обработчики команд
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("clear", clear_command))
 
-    # Обработчик текстовых сообщений
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        # Обработчик текстовых сообщений
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Обработчик нажатий на кнопки
-    application.add_handler(CallbackQueryHandler(button_callback))
+        # Обработчик нажатий на кнопки
+        application.add_handler(CallbackQueryHandler(button_callback))
 
-    logger.info("Telegram бот успешно настроен")
-    return application
+        logger.info("Telegram бот успешно настроен")
+        return application
+    except Exception as e:
+        logger.error(f"Ошибка при создании Telegram бота: {e}")
+        traceback.print_exc()
+        return None
 
 
-async def run_telegram_bot():
-    """Запускает Telegram бота."""
-    application = create_telegram_bot()
-    if application:
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling()
+async def shutdown_handler():
+    """Корректное завершение работы бота при остановке приложения."""
+    logger.info("Завершение работы Telegram бота...")
+
+
+def telegram_bot_thread_function():
+    """Функция для запуска бота в отдельном потоке."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        # Создаем новый цикл событий для этого потока
+        bot_app = create_telegram_bot()
+        if not bot_app:
+            logger.error("Не удалось создать приложение Telegram бота.")
+            return
+
+        # Запускаем бота
+        loop.run_until_complete(bot_app.initialize())
+        loop.run_until_complete(bot_app.start())
+        loop.run_until_complete(bot_app.updater.start_polling())
+
         logger.info("Telegram бот запущен и ожидает сообщений")
 
-        # Держим бота запущенным до остановки программы
-        try:
-            await asyncio.Event().wait()  # Бесконечное ожидание
-        finally:
-            await application.stop()
-    else:
-        logger.error("Не удалось запустить Telegram бота")
+        # Устанавливаем обработчик сигналов для корректного завершения
+        for s in (signal.SIGINT, signal.SIGTERM, signal.SIGABRT):
+            loop.add_signal_handler(s, lambda: asyncio.create_task(shutdown_bot(bot_app, loop)))
+
+        # Держим бота работающим
+        loop.run_forever()
+    except Exception as e:
+        logger.error(f"Ошибка в потоке Telegram бота: {e}")
+        traceback.print_exc()
+    finally:
+        loop.close()
+        logger.info("Поток Telegram бота завершен")
+
+
+async def shutdown_bot(bot_app, loop):
+    """Корректное завершение работы бота."""
+    logger.info("Получен сигнал завершения. Останавливаем Telegram бота...")
+    await bot_app.stop()
+    await bot_app.shutdown()
+    logger.info("Telegram бот остановлен")
+    loop.stop()
 
 
 # Эта функция будет вызываться из main.py
@@ -406,6 +463,7 @@ def start_telegram_bot():
         logger.warning("TELEGRAM_BOT_TOKEN не найден. Telegram бот не будет запущен.")
         return
 
-    # Запускаем бота в отдельном потоке
-    asyncio.create_task(run_telegram_bot())
+    # Запускаем бота в отдельном потоке с выделенным циклом событий
+    bot_thread = threading.Thread(target=telegram_bot_thread_function, daemon=True)
+    bot_thread.start()
     logger.info("Telegram бот запущен в отдельном потоке")
