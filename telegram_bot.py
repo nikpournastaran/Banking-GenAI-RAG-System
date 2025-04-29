@@ -16,8 +16,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # Импортируем функции из основного модуля
-from main import load_vectorstore, session_memories, session_last_activity, SESSION_MAX_AGE, clean_old_sessions, \
-    telegram_sessions
+from main import load_vectorstore, session_memories, session_last_activity, SESSION_MAX_AGE, clean_old_sessions, telegram_sessions
 
 # Настройка логирования
 logging.basicConfig(
@@ -26,13 +25,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Версия модуля
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 # Глобальная переменная для хранения загруженного индекса
 vectorstore = None
 
 # Глобальная переменная для хранения экземпляра приложения
 application = None
+
+# Глобальный кэш для хранения источников по ID пользователей
+user_sources_cache = {}
 
 # Максимальное количество токенов в ответе (для разбиения длинных ответов)
 MAX_MESSAGE_LENGTH = 4096
@@ -111,7 +113,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Основной обработчик текстовых сообщений."""
-    global vectorstore
+    global vectorstore, user_sources_cache
 
     # Получаем идентификатор пользователя
     user_id = update.effective_user.id
@@ -338,32 +340,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Разбиваем на части по MAX_MESSAGE_LENGTH символов
             chunks = [answer[i:i + MAX_MESSAGE_LENGTH] for i in range(0, len(answer), MAX_MESSAGE_LENGTH)]
             for i, chunk in enumerate(chunks):
-                await update.message.reply_text(f"Часть {i + 1}/{len(chunks)}:\n\n{chunk}")
+                await update.message.reply_text(f"Часть {i+1}/{len(chunks)}:\n\n{chunk}")
 
         # Добавляем кнопку для показа источников, если они есть
         if relevant_docs:
-            # Сохраняем релевантные документы в контексте пользователя для показа источников
+            # Сохраняем релевантные документы в глобальной переменной для показа источников
             user_id_str = str(user_id)
 
-            # Создаем хранилище для источников, если оно не существует
-            if not hasattr(context, 'bot_data'):
-                context.bot_data = {}
-            if 'user_sources' not in context.bot_data:
-                context.bot_data['user_sources'] = {}
-
             # Сохраняем только имена документов и короткие фрагменты содержимого
-            context.bot_data['user_sources'][user_id_str] = []
+            user_sources_cache[user_id_str] = []
             for doc in relevant_docs:
                 title = doc.metadata.get("source", "Источник неизвестен")
                 content_preview = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
-                context.bot_data['user_sources'][user_id_str].append({
+                user_sources_cache[user_id_str].append({
                     "title": title,
                     "content": content_preview
                 })
 
             keyboard = [
-                [InlineKeyboardButton("📚 Показать источники",
-                                      callback_data=f"sources_{user_id}_{datetime.now().timestamp()}")]
+                [InlineKeyboardButton("📚 Показать источники", callback_data=f"sources_{user_id}_{datetime.now().timestamp()}")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text("Нажмите для просмотра источников ответа:", reply_markup=reply_markup)
@@ -392,6 +387,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик нажатий на кнопки."""
+    global user_sources_cache
     query = update.callback_query
     await query.answer()
 
@@ -409,9 +405,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
             # Проверяем, сохранены ли источники для этого пользователя
             try:
-                if hasattr(context, 'bot_data') and 'user_sources' in context.bot_data and user_id_str in \
-                        context.bot_data['user_sources']:
-                    sources = context.bot_data['user_sources'][user_id_str]
+                if user_id_str in user_sources_cache:
+                    sources = user_sources_cache[user_id_str]
                     if sources:
                         # Формируем сообщение с источниками
                         sources_text = "📚 Использованные источники:\n\n"
@@ -427,6 +422,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await query.message.reply_text("Источники для этого ответа недоступны.")
             except Exception as e:
                 logger.error(f"Ошибка при показе источников: {e}")
+                traceback.print_exc()
                 await query.message.reply_text("Произошла ошибка при попытке показать источники.")
         else:
             await query.message.reply_text("Эта кнопка предназначена только для автора вопроса.")
