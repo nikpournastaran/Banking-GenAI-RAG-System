@@ -25,13 +25,26 @@ echo "- Current directory: $(ls -la)"
 echo "- Data directory: $(ls -la /data)"
 echo "- Available disk space: $(df -h /data)"
 
-# Check OpenAI API key (without revealing it)
+# Check API keys
 if [ -z "$OPENAI_API_KEY" ]; then
     echo "WARNING: OPENAI_API_KEY environment variable is not set!"
 else
     echo "OPENAI_API_KEY is set (not shown for security)"
 fi
 
+if [ -z "$ANTHROPIC_API_KEY" ]; then
+    echo "WARNING: ANTHROPIC_API_KEY environment variable is not set!"
+else
+    echo "ANTHROPIC_API_KEY is set (not shown for security)"
+fi
+
+# Check Telegram bot token
+if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+    echo "WARNING: TELEGRAM_BOT_TOKEN environment variable is not set! Telegram bot will not run."
+else
+    echo "TELEGRAM_BOT_TOKEN is set (not shown for security). Telegram bot will run."
+fi
+
 # Start the application with proper error handling
-echo "Starting web server..."
+echo "Starting web server and Telegram bot..."
 exec uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers

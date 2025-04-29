@@ -31,3 +31,6 @@ tenacity==8.2.3
 
 # Core dependencies only - remove extras
 numpy==1.26.4
+
+# Telegram bot integration
+python-telegram-bot>=20.7

@@ -20,6 +20,13 @@ from langchain_anthropic import ChatAnthropic
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI  # ChatOpenAI можно оставить как запасной вариант
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+import uvicorn
+import asyncio
+import threading
+from typing import Optional
+
+# Глобальная переменная для хранения экземпляра Telegram бота
+telegram_bot_app = None
 
 load_dotenv()
 
@@ -288,6 +295,13 @@ async def startup_event():
         print("ВНИМАНИЕ: Отсутствует ключ ANTHROPIC_API_KEY для работы с Claude")
         print("Бот может работать некорректно без этих ключей.")
 
+    # Проверяем наличие Telegram токена
+    if not os.environ.get("TELEGRAM_BOT_TOKEN"):
+        print("ВНИМАНИЕ: Отсутствует ключ TELEGRAM_BOT_TOKEN для Telegram бота")
+        print("Telegram бот не будет запущен.")
+    else:
+        print("Ключ TELEGRAM_BOT_TOKEN найден. Telegram бот будет запущен.")
+
     # Проверяем наличие локального индекса
     local_index_file = os.path.join(LOCAL_INDEX_PATH, "index.faiss")
     local_index_exists = os.path.exists(local_index_file)
@@ -317,7 +331,19 @@ async def startup_event():
         print("ВНИМАНИЕ: Индекс не найден ни в persistent storage, ни локально!")
         print("Приложение может работать некорректно без индекса.")
 
-    print("Приложение запущено и готово к работе!")
+    # Запускаем Telegram бота в отдельном потоке, если есть токен
+    if os.environ.get("TELEGRAM_BOT_TOKEN"):
+        try:
+            # Импортируем функцию запуска Telegram бота
+            from telegram_bot import start_telegram_bot
+
+            # Запускаем бота в отдельном потоке
+            print("Запуск Telegram бота...")
+            start_telegram_bot()
+            print("Telegram бот успешно запущен")
+        except Exception as e:
+            print(f"Ошибка при запуске Telegram бота: {str(e)}")
+            traceback.print_exc()
 
 
 # Эндпоинты

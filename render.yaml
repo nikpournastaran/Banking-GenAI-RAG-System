@@ -7,6 +7,10 @@ services:
     envVars:
       - key: OPENAI_API_KEY
         sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
       - key: ADMIN_PASSWORD
         sync: false
       - key: PYTHONUNBUFFERED
@@ -21,6 +25,7 @@ services:
     buildFilter:
       paths:
         - "main.py"
+        - "telegram_bot.py"
         - "static/**"
         - "requirements.txt"
         - "Dockerfile"
