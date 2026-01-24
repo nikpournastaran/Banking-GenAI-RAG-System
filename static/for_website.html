@@ -183,8 +183,7 @@
             border-style: solid;
             border-width: 1px 0 0 0;
         }
-
-        /* Стили для источников информации */
+/* Стили для источников информации */
         #sources-container details {
             margin-bottom: 8px;
         }
@@ -342,7 +341,8 @@
         <input type="text" id="question" placeholder="Задайте вопрос...">
         <button id="sendButton">Отправить</button>
     </footer>
-    <p style="font-size: 12px; color: #ccc; text-align: center; margin: 0 0 5px 0;">Последняя пересборка базы: {{last_updated}}</p>
+    <!-- Исправлено: Заменяем плейсхолдер статической датой обновления -->
+    <p style="font-size: 12px; color: #ccc; text-align: center; margin: 0 0 5px 0;" id="lastUpdated">Последняя пересборка базы: загрузка...</p>
 
     <!-- Панель администратора -->
     <div class="admin-panel" id="adminPanel" style="display: none;">
@@ -380,6 +380,28 @@
             const questionInput = document.getElementById('question');
             const clearHistoryButton = document.getElementById('clearHistoryButton');
             const sourcesContainer = document.getElementById('sources-container');
+            const lastUpdatedElement = document.getElementById('lastUpdated');
+
+            // Получаем информацию о последнем обновлении при загрузке страницы
+            fetch('/chatbot-proxy.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: 'action=get_last_updated'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success' && data.last_updated) {
+                    lastUpdatedElement.textContent = 'Последняя пересборка базы: ' + data.last_updated;
+                } else {
+                    lastUpdatedElement.textContent = 'Последняя пересборка базы: не указана';
+                }
+            })
+            .catch(error => {
+                console.error('Ошибка при получении информации об обновлении:', error);
+                lastUpdatedElement.textContent = 'Последняя пересборка базы: информация недоступна';
+            });
 
             // Устанавливаем фокус на поле ввода после загрузки
             setTimeout(() => {
