@@ -6,8 +6,8 @@ This repository features a high-precision **Retrieval-Augmented Generation (RAG)
 
 ### 🛠️ Key Technical Enhancements
 * **Precision Engineering:** Integrated **FAISS** with **LangChain** for semantic search across unstructured legal documents.
-* [cite_start]**Hybrid Evaluation:** Designed to be compatible with **LLM-as-a-Judge** frameworks (inspired by my research at University of Federico II).
-* [cite_start]**Scalable Infrastructure:** Fully containerized with **Docker** for seamless deployment in production-ready digital platforms[cite: 13].
+* **Hybrid Evaluation:** Designed to be compatible with **LLM-as-a-Judge** frameworks (inspired by my research at University of Federico II).
+* **Scalable Infrastructure:** Fully containerized with **Docker** for seamless deployment in production-ready digital platforms[cite: 13].
 
 ### 🏗️ Architecture
 The system uses a modular "Embedding-Retrieve-Generate" flow:
