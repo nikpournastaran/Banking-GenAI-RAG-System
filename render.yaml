@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: rag-chatbot
+    env: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: RENDER
+        value: "true"
+    healthCheckPath: /ping
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    buildFilter:
+      paths:
+        - "main.py"
+        - "telegram_bot.py"
+        - "static/**"
+        - "requirements.txt"
+        - "Dockerfile"
+        - "start.sh"
+        - "index/**"
